@@ -77,8 +77,8 @@ impl<'a> FromDatum for PgHeapTuple<'a, AllocatedByRust> {
         is_null: bool,
         _oid: pg_sys::Oid,
     ) -> Option<Self>
-    where
-        Self: Sized,
+        where
+            Self: Sized,
     {
         if is_null {
             None
@@ -242,13 +242,13 @@ impl<'a> PgHeapTuple<'a, AllocatedByRust> {
                 })
             }
         })
-        .catch_when(PgSqlErrorCode::ERRCODE_WRONG_OBJECT_TYPE, |_| {
-            Err(PgHeapTupleError::NotACompositeType(typoid))
-        })
-        .catch_when(PgSqlErrorCode::ERRCODE_UNDEFINED_OBJECT, |_| {
-            Err(PgHeapTupleError::NoSuchTypeOid(typoid))
-        })
-        .execute()
+            .catch_when(PgSqlErrorCode::ERRCODE_WRONG_OBJECT_TYPE, |_| {
+                Err(PgHeapTupleError::NotACompositeType(typoid))
+            })
+            .catch_when(PgSqlErrorCode::ERRCODE_UNDEFINED_OBJECT, |_| {
+                Err(PgHeapTupleError::NoSuchTypeOid(typoid))
+            })
+            .execute()
     }
 
     /// Create a new [PgHeapTuple] from a [PgTupleDesc] from an iterator of Datums.
@@ -261,7 +261,7 @@ impl<'a> PgHeapTuple<'a, AllocatedByRust> {
     ///
     /// This function is unsafe as we cannot guarantee the provided [`pg_sys::Datum`]s are valid
     /// as the specified [`PgTupleDesc`] might expect
-    pub unsafe fn from_datums<I: IntoIterator<Item = Option<pg_sys::Datum>>>(
+    pub unsafe fn from_datums<I: IntoIterator<Item=Option<pg_sys::Datum>>>(
         tupdesc: PgTupleDesc<'a>,
         datums: I,
     ) -> Result<PgHeapTuple<'a, AllocatedByRust>, PgHeapTupleError> {
@@ -393,6 +393,47 @@ impl<'a> PgHeapTuple<'a, AllocatedByRust> {
             Ok(())
         }
     }
+
+    /// Given the index for an attribute in this [PgHeapTuple], change its value.
+    ///
+    /// Attribute numbers start at 1, not 0.
+    ///
+    /// This is a dangerous operate, dont do it if you have other choice!
+    ///
+    /// ## Errors
+    /// - return [TryFromDatumError::NoSuchAttributeNumber] if the attribute does not exist
+    pub fn set_by(
+        &mut self,
+        attno: NonZeroUsize,
+        datum: Option<Datum>,
+    ) -> Result<(), TryFromDatumError> {
+        unsafe {
+
+            let mut datums =
+                (0..self.tupdesc.len()).map(|i| pg_sys::Datum::from(i)).collect::<Vec<_>>();
+            let mut nulls = (0..self.tupdesc.len()).map(|_| false).collect::<Vec<_>>();
+            let mut do_replace = (0..self.tupdesc.len()).map(|_| false).collect::<Vec<_>>();
+
+            let attno = attno.get() - 1;
+
+            nulls[attno] = datum.is_none();
+            datums[attno] = datum.unwrap_or(0.into());
+            do_replace[attno] = true;
+
+            let new_tuple = PgBox::<pg_sys::HeapTupleData, AllocatedByRust>::from_rust(
+                pg_sys::heap_modify_tuple(
+                    self.tuple.as_ptr(),
+                    self.tupdesc.as_ptr(),
+                    datums.as_mut_ptr(),
+                    nulls.as_mut_ptr(),
+                    do_replace.as_mut_ptr(),
+                ),
+            );
+            let old_tuple = std::mem::replace(&mut self.tuple, new_tuple);
+            drop(old_tuple);
+            Ok(())
+        }
+    }
 }
 
 impl<'a, AllocatedBy: WhoAllocated> IntoDatum for PgHeapTuple<'a, AllocatedBy> {
@@ -455,7 +496,7 @@ impl<'a, AllocatedBy: WhoAllocated> PgHeapTuple<'a, AllocatedBy> {
     /// The return value is `(attribute_number: NonZeroUsize, attribute_info: &pg_sys::FormData_pg_attribute)`.
     pub fn attributes(
         &'a self,
-    ) -> impl std::iter::Iterator<Item = (NonZeroUsize, &'a pg_sys::FormData_pg_attribute)> {
+    ) -> impl std::iter::Iterator<Item=(NonZeroUsize, &'a pg_sys::FormData_pg_attribute)> {
         self.tupdesc.iter().enumerate().map(|(i, att)| (NonZeroUsize::new(i + 1).unwrap(), att))
     }
 
